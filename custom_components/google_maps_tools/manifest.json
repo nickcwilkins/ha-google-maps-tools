@@ -1,0 +1,15 @@
+{
+    "domain": "google_maps_tools",
+    "name": "Google Maps Tools",
+    "codeowners": [
+        "@nickcwilkins"
+    ],
+    "config_flow": true,
+    "documentation": "https://github.com/nickcwilkins/ha-google-maps-tools",
+    "iot_class": "cloud_polling",
+    "issue_tracker": "https://github.com/nickcwilkins/ha-google-maps-tools/issues",
+    "version": "0.2.0",
+    "requirements": [],
+    "dependencies": [],
+    "after_dependencies": []
+}

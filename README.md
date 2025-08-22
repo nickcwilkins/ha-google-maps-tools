@@ -1,46 +1,73 @@
-# Notice
+# Google Maps Tools (Home Assistant LLM API)
 
-The component and platforms in this repository are not meant to be used by a
-user, but as a "blueprint" that custom component developers can build
-upon, to make more awesome stuff.
+Expose Google Maps Platform capabilities (geocoding, reverse geocoding, turn‑by‑turn directions) to Home Assistant Large Language Model (LLM) / Assist style agents via a custom LLM API. This lets an AI assistant inside Home Assistant call structured tools to:
 
-HAVE FUN! 😎
+* Convert an address (or component filters) to coordinates
+* Convert coordinates to the best matching human readable address
+* Get route summaries (distance, duration) between two locations
 
-## Why?
+## Features
 
-This is simple, by having custom_components look (README + structure) the same
-it is easier for developers to help each other and for users to start using them.
+* Three LLM tools registered under API id `google_maps`:
+	* `gmaps_geocode`
+	* `gmaps_reverse_geocode`
+	* `gmaps_directions`
+* Sensible defaults for language, region, travel mode.
+* Minimal prompt instructing the model how to use the tools.
+* Simplified structured responses (status + concise summary) while retaining core route metrics.
 
-If you are a developer and you want to add things to this "blueprint" that you think more
-developers will have use for, please open a PR to add it :)
+## Installation
 
-## What?
+1. Copy `custom_components/google_maps_tools` into your Home Assistant `custom_components` directory (or install via HACS as a custom repository if publishing).
+2. Restart Home Assistant.
+3. In Settings → Devices & Services → Add Integration, search for "Google Maps Tools".
+4. Enter a valid Google Maps Platform API key with Geocoding and Directions APIs enabled, optionally adjust defaults.
 
-This repository contains multiple files, here is a overview:
+## Configuration Options
 
-File | Purpose | Documentation
--- | -- | --
-`.devcontainer.json` | Used for development/testing with Visual Studio Code. | [Documentation](https://code.visualstudio.com/docs/remote/containers)
-`.github/ISSUE_TEMPLATE/*.yml` | Templates for the issue tracker | [Documentation](https://help.github.com/en/github/building-a-strong-community/configuring-issue-templates-for-your-repository)
-`custom_components/integration_blueprint/*` | Integration files, this is where everything happens. | [Documentation](https://developers.home-assistant.io/docs/creating_component_index)
-`CONTRIBUTING.md` | Guidelines on how to contribute. | [Documentation](https://help.github.com/en/github/building-a-strong-community/setting-guidelines-for-repository-contributors)
-`LICENSE` | The license file for the project. | [Documentation](https://help.github.com/en/github/creating-cloning-and-archiving-repositories/licensing-a-repository)
-`README.md` | The file you are reading now, should contain info about the integration, installation and configuration instructions. | [Documentation](https://help.github.com/en/github/writing-on-github/basic-writing-and-formatting-syntax)
-`requirements.txt` | Python packages used for development/lint/testing this integration. | [Documentation](https://pip.pypa.io/en/stable/user_guide/#requirements-files)
+| Option | Description | Default |
+|--------|-------------|---------|
+| API Key | Google Maps Platform key (required) | — |
+| Default Language | Response language passed to APIs | `en` |
+| Default Region | Region code bias (e.g. `us`, leave blank for none) | none |
+| Default Travel Mode | Directions mode (`driving`, `walking`, `bicycling`, `transit`) | `driving` |
 
-## How?
+You can override most defaults per tool call by passing parameters in the tool invocation.
 
-1. Create a new repository in GitHub, using this repository as a template by clicking the "Use this template" button in the GitHub UI.
-1. Open your new repository in Visual Studio Code devcontainer (Preferably with the "`Dev Containers: Clone Repository in Named Container Volume...`" option).
-1. Rename all instances of the `integration_blueprint` to `custom_components/<your_integration_domain>` (e.g. `custom_components/awesome_integration`).
-1. Rename all instances of the `Integration Blueprint` to `<Your Integration Name>` (e.g. `Awesome Integration`).
-1. Run the `scripts/develop` to start HA and test out your new integration.
+## LLM Tool Schemas
 
-## Next steps
+### gmaps_geocode
+Arguments: `address` (string, optional), `components` (string, optional), `language`, `region`.
+At least one of `address` or `components` should be supplied.
 
-These are some next steps you may want to look into:
-- Add tests to your integration, [`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) can help you get started.
-- Add brand images (logo/icon) to https://github.com/home-assistant/brands.
-- Create your first release.
-- Share your integration on the [Home Assistant Forum](https://community.home-assistant.io/).
-- Submit your integration to [HACS](https://hacs.xyz/docs/publish/start).
+### gmaps_reverse_geocode
+Arguments: `lat` (float, required), `lng` (float, required), optional `language`, `result_type`, `location_type`.
+
+### gmaps_directions
+Arguments: `origin` (string), `destination` (string), optional: `mode`, `language`, `region`, `alternatives` (bool), `units` (`metric`/`imperial`), `departure_time` (unix), `arrival_time` (unix), `avoid` (string).
+
+## Example (Pseudo) LLM Usage
+
+The assistant may decide:
+1. Call `gmaps_geocode` with an address → get coordinates.
+2. Call `gmaps_directions` with textual addresses directly (API supports this) → summarize distance & ETA to user.
+
+Returned direction summary fields: `summary`, `distance_meters`, `distance_text`, `duration_seconds`, `duration_text`, `start_address`, `end_address`.
+
+## Privacy / Quotas
+
+All requests go directly to Google’s Web Service endpoints from your Home Assistant instance. Ensure your API key is restricted (HTTP referrer / IP) per Google’s best practices. Usage counts against your Google Maps Platform billing account quotas.
+
+## Troubleshooting
+
+* `ZERO_RESULTS` is not an error—means no match.
+* Other statuses raise integration errors logged in Home Assistant logs.
+* Verify APIs (Geocoding API, Directions API) are enabled in Google Cloud Console.
+
+## License
+
+This project is released under the MIT License (see `LICENSE`).
+
+## Disclaimer
+
+Not an official Google product. Use at your own risk; observe Maps Platform Terms of Service.
