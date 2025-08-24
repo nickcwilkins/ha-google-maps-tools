@@ -8,6 +8,7 @@ needed for summary style answers to keep latency and payload size low.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,8 @@ from .const import (
     HTTP_TIMEOUT,
     ROUTES_ENDPOINT,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class GoogleMapsApiError(Exception):
@@ -100,7 +103,7 @@ def _build_routes_body(
 
 
 def _routes_field_mask() -> str:
-    """Return a compact field mask for computeRoutes requests (polyline excluded)."""
+    """Return a compact field mask for computeRoutes requests."""
     parts = [
         "routes.distanceMeters",
         "routes.duration",
@@ -110,34 +113,95 @@ def _routes_field_mask() -> str:
         "routes.legs.steps",
         "routes.legs.duration",
         "routes.legs.localizedValues",
-        "routes.legs.startLocation",
-        "routes.legs.endLocation",
     ]
     return ",".join(parts)
 
 
-def _enrich_routes_localized(data: dict[str, Any]) -> None:
-    """Attach convenience summary text fields in-place if present."""
-    routes = data.get("routes", [])
-    if not routes:
-        return
-    first = routes[0]
-    first.setdefault("_summaryText", {})
-    loc_vals = first.get("localizedValues") or {}
-    if loc_vals:
-        if txt := loc_vals.get("distance", {}).get("text"):
-            first["_summaryText"]["distance"] = txt
-        if txt := loc_vals.get("duration", {}).get("text"):
-            first["_summaryText"]["duration"] = txt
-    legs = first.get("legs") or []
-    if legs:
-        leg0 = legs[0]
-        leg_loc = leg0.get("localizedValues") or {}
-        leg_summary = first["_summaryText"].setdefault("leg", {})
-        if txt := leg_loc.get("distance", {}).get("text"):
-            leg_summary["distance"] = txt
-        if txt := leg_loc.get("duration", {}).get("text"):
-            leg_summary["duration"] = txt
+def _collapse_objects(node: Any) -> Any:
+    """
+    Recursively collapse any mapping with a single key to its value.
+
+    Mutates the original structure in-place for lists and dictionaries while
+    returning the possibly collapsed value so parents can update references.
+
+    Examples:
+        {"staticDuration": {"text": "1 min"}} -> {"staticDuration": "1 min"}
+        {"a": {"b": {"c": 1}}} -> {"a": 1}
+
+    """
+    if isinstance(node, dict):
+        # First collapse children so we mutate in place
+        for k, v in list(node.items()):
+            node[k] = _collapse_objects(v)
+        if len(node) == 1:  # Single key mapping -> replace with its value
+            return next(iter(node.values()))
+        return node
+    if isinstance(node, list):
+        for idx, item in enumerate(node):
+            node[idx] = _collapse_objects(item)
+        return node
+    return node
+
+
+def _apply_localization(
+    node: Any,
+) -> None:
+    """
+    Promote localized string values to their parent objects.
+
+    For any mapping containing a ``localizedValues`` dictionary, copy or replace
+    fields on the parent with the human friendly string values. Special handling
+    is applied for ``distance`` which replaces ``distanceMeters`` (removing the
+    numeric meter value entirely). Existing raw duration / staticDuration values
+    (e.g. ``1165s`` / ``5s``) are replaced with their localized counterparts
+    (e.g. ``19 mins`` / ``1 min``).
+
+    The original ``localizedValues`` container is preserved so callers can still
+    access the raw grouping if desired.
+    """
+    if isinstance(node, dict):
+        # If localizedValues present, overlay its values
+        if (lv := node.get("localizedValues")) and isinstance(lv, dict):
+            # distanceMeters -> distance (replace & remove numeric meters)
+            if "distance" in lv and "distanceMeters" in node:
+                node.pop("distanceMeters", None)
+                node["distance"] = lv["distance"]
+            # For the remaining keys just replace/insert
+            for key in ("duration", "staticDuration"):
+                if key in lv:
+                    node[key] = lv[key]
+            # Any other localized keys we haven't explicitly handled -> copy if absent
+            for key, value in lv.items():
+                if (
+                    key not in ("distance", "duration", "staticDuration")
+                    and key not in node
+                ):
+                    node[key] = value
+        # Recurse into child values
+        for v in list(node.values()):
+            _apply_localization(v)
+    elif isinstance(node, list):
+        for item in node:
+            _apply_localization(item)
+
+
+def _remove_polylines(node: Any) -> None:
+    """
+    Recursively remove any 'polyline' keys from a nested structure.
+
+    The Routes API step objects include an encoded ``polyline`` field which can
+    be sizable. For post-processing / summarization use cases we don't need to
+    retain this geometry, so we strip it after other transformations to reduce
+    payload size and avoid accidentally exposing it downstream.
+    """
+    if isinstance(node, dict):
+        if "polyline" in node:
+            node.pop("polyline", None)
+        for value in list(node.values()):
+            _remove_polylines(value)
+    elif isinstance(node, list):
+        for item in node:
+            _remove_polylines(item)
 
 
 class GoogleMapsApiClient:
@@ -192,7 +256,7 @@ class GoogleMapsApiClient:
     ) -> dict[str, Any]:
         """Call the Routes API ``computeRoutes`` endpoint and return raw JSON."""
         body = _build_routes_body(origin, destination, options)
-    field_mask = _routes_field_mask()
+        field_mask = _routes_field_mask()
         try:
             async with async_timeout.timeout(HTTP_TIMEOUT):
                 headers = {
@@ -211,6 +275,10 @@ class GoogleMapsApiClient:
                         msg = f"Routes API HTTP {resp.status}: {text[:300]}"
                         raise GoogleMapsApiError(msg)
                     data: dict[str, Any] = await resp.json()
+                    # Post process data for LLM consumption
+                    _remove_polylines(data)
+                    _apply_localization(data)
+                    _collapse_objects(data)
         except GoogleMapsApiError:
             raise
         except Exception as err:  # pylint: disable=broad-except
@@ -219,7 +287,7 @@ class GoogleMapsApiClient:
         if "routes" not in data:
             msg = "Routes API malformed response: missing routes"
             raise GoogleMapsApiError(msg)
-        _enrich_routes_localized(data)
+        _LOGGER.debug("Routes API response: %s", data)
         return data
 
     async def _request(self, url: str, params: dict[str, Any]) -> dict[str, Any]:

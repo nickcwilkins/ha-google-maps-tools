@@ -5,14 +5,18 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
+from dateutil import parser as dateutil_parser
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+if TYPE_CHECKING:  # pragma: no cover - imported for typing only
+    from homeassistant.core import HomeAssistant
 
 from .api import DirectionsOptions, GoogleMapsApiClient
 from .const import (
@@ -23,6 +27,8 @@ from .const import (
     DEFAULT_LANGUAGE,
     DEFAULT_REGION,
     DEFAULT_TRAVEL_MODE,
+    DIRECTIONS_ARRIVAL_TIME_DESC,
+    DIRECTIONS_DEPARTURE_TIME_DESC,
     DOMAIN,
     LLM_API_ID,
     TOOL_DIRECTIONS,
@@ -180,19 +186,13 @@ class ReverseGeocodeTool(GoogleMapsTool):
         language = tool_input.tool_args.get(
             "language", data.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
         )
-        res = await client.reverse_geocode(
+        return await client.reverse_geocode(
             lat=tool_input.tool_args["lat"],
             lng=tool_input.tool_args["lng"],
             language=language,
             result_type=tool_input.tool_args.get("result_type"),
             location_type=tool_input.tool_args.get("location_type"),
         )
-        simple = client.extract_first_location(res)
-        return {
-            "status": res.get("status"),
-            "result": simple,
-            "raw_count": len(res.get("results", [])),
-        }
 
 
 class DirectionsTool(GoogleMapsTool):
@@ -219,56 +219,60 @@ class DirectionsTool(GoogleMapsTool):
         )
         origin = tool_input.tool_args["origin"]
         destination = tool_input.tool_args["destination"]
+
+        def _parse_time(value: Any) -> int | None:
+            """
+            Parse user supplied time (epoch int or natural language) to epoch seconds.
+
+            Accepts:
+            - int (epoch seconds)
+            - str like "5:00pm", "3:30 pm", "2:30pm Monday, March 29th, 2025".
+            Returns epoch seconds or None if unparseable.
+            """
+            if value in (None, ""):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, (float,)):
+                return int(value)
+            if isinstance(value, str):
+                try:
+                    dt = dateutil_parser.parse(value, fuzzy=True)
+                except (ValueError, TypeError):  # pragma: no cover - defensive
+                    return None
+                # If no timezone info, assume Home Assistant local tz; fallback UTC.
+                if dt.tzinfo is None:
+                    tzname = getattr(hass.config, "time_zone", None)
+                    if tzname:
+                        try:
+                            dt = dt.replace(tzinfo=ZoneInfo(tzname))
+                        except (ValueError, OSError):
+                            # pragma: no cover - fallback to UTC
+                            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                    else:  # Fallback UTC
+                        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                return int(dt.timestamp())
+            return None
+
+        departure_time = _parse_time(tool_input.tool_args.get("departure_time"))
+        arrival_time = _parse_time(tool_input.tool_args.get("arrival_time"))
         options = DirectionsOptions(
             mode=mode,
             language=language,
             region=region,
             alternatives=tool_input.tool_args.get("alternatives"),
             units=tool_input.tool_args.get("units"),
-            departure_time=tool_input.tool_args.get("departure_time"),
-            arrival_time=tool_input.tool_args.get("arrival_time"),
+            departure_time=departure_time,
+            arrival_time=arrival_time,
             avoid=tool_input.tool_args.get("avoid"),
         )
         _LOGGER.debug(
-            "Requesting directions origin=%s destination=%s mode=%s alternatives=%s "
-            "avoid=%s",
-            origin,
-            destination,
-            options.mode,
-            options.alternatives,
-            options.avoid,
+            "Requesting directions tool_input=%s",
+            tool_input,
         )
         res = await client.directions(origin, destination, options)
-        routes = res.get("routes", [])
-        summary = None
-        if routes:
-            first = routes[0]
-            legs = first.get("legs", [])
-            first_leg = legs[0] if legs else {}
-            if legs and _LOGGER.isEnabledFor(logging.DEBUG):
-                for idx, leg in enumerate(legs):
-                    _LOGGER.debug(
-                        "Leg %d %s",
-                        idx,
-                        leg,
-                    )
-            # Routes API fields: distanceMeters (int), duration string (e.g. "123s")
-            duration_raw = first.get("duration") or first_leg.get("duration")
-            duration_seconds = None
-            if isinstance(duration_raw, str) and duration_raw.endswith("s"):
-                with contextlib.suppress(ValueError):
-                    duration_seconds = float(duration_raw[:-1])
-            summary = {
-                "description": first.get("description"),
-                "distance_meters": first.get("distanceMeters"),
-                "duration_seconds": duration_seconds,
-                "start_location": first_leg.get("startLocation"),
-                "end_location": first_leg.get("endLocation"),
-            }
-        return {
-            "summary": summary,
-            "route_count": len(routes),
-        }
+
+        return res.get("routes", [])
 
 
 _ERR_NO_ENTRY = "Google Maps Tools config entry not loaded or unavailable"
@@ -333,9 +337,14 @@ class GoogleMapsLLMAPI(llm.API):  # type: ignore[misc]
                 vol.Optional("language"): cv.string,
                 vol.Optional("region"): cv.string,
                 vol.Optional("alternatives"): cv.boolean,
-                vol.Optional("units"): vol.In(["metric", "imperial"]),
-                vol.Optional("departure_time"): vol.Coerce(int),
-                vol.Optional("arrival_time"): vol.Coerce(int),
+                vol.Optional(
+                    "departure_time",
+                    description=DIRECTIONS_DEPARTURE_TIME_DESC,
+                ): vol.Any(vol.Coerce(int), cv.string),
+                vol.Optional(
+                    "arrival_time",
+                    description=DIRECTIONS_ARRIVAL_TIME_DESC,
+                ): vol.Any(vol.Coerce(int), cv.string),
                 vol.Optional("avoid"): cv.string,
             }
         )
@@ -362,9 +371,8 @@ class GoogleMapsLLMAPI(llm.API):  # type: ignore[misc]
         ]
         prompt = (
             "You can use Google Maps tools to find coordinates, addresses, and "
-            "directions. The API support specifying addresses as lat/lng, address,"
-            " or natural language. Return concise user-facing answers summarizing the"
-            " result."
+            "directions. The API supports specifying addresses as lat/lng, address,"
+            " or natural language."
         )
         return llm.APIInstance(
             api=self, api_prompt=prompt, llm_context=llm_context, tools=tools

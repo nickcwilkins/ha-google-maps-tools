@@ -9,6 +9,15 @@
                     "default_region": "Default Region",
                     "default_travel_mode": "Default Travel Mode"
                 }
+            },
+            "reconfigure": {
+                "description": "Update your Google Maps API key or default parameters.",
+                "data": {
+                    "api_key": "API Key",
+                    "default_language": "Default Language",
+                    "default_region": "Default Region",
+                    "default_travel_mode": "Default Travel Mode"
+                }
             }
         },
         "error": {
@@ -16,7 +25,9 @@
             "unknown": "Unknown error occurred."
         },
         "abort": {
-            "already_configured": "This entry is already configured."
+            "already_configured": "This entry is already configured.",
+            "reconfigure_successful": "Configuration updated successfully.",
+            "wrong_account": "The unique account for this integration cannot be changed."
         }
     }
 }

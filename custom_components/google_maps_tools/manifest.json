@@ -11,5 +11,6 @@
     "version": "0.2.0",
     "requirements": [],
     "dependencies": [],
-    "after_dependencies": []
+    "after_dependencies": [],
+    "single_config_entry": true
 }
