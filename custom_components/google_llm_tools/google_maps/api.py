@@ -11,14 +11,18 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import async_timeout
 
+if TYPE_CHECKING:
+    import aiohttp
+
+from ..const import (
+    HTTP_TIMEOUT,
+)
 from .const import (
     GEOCODE_ENDPOINT,
-    HTTP_TIMEOUT,
     ROUTES_ENDPOINT,
 )
 
@@ -208,6 +212,14 @@ class GoogleMapsApiClient:
     """Client for Google Maps Web Service endpoints needed for tools."""
 
     def __init__(self, api_key: str, session: aiohttp.ClientSession) -> None:
+        """
+        Initialize the Google Maps API client.
+
+        Args:
+            api_key: API key used for Google Maps requests.
+            session: An aiohttp.ClientSession used to perform HTTP calls.
+
+        """
         self._api_key = api_key
         self._session = session
 
@@ -220,6 +232,27 @@ class GoogleMapsApiClient:
         region: str | None = None,
         bounds: str | None = None,
     ) -> dict[str, Any]:
+        """
+        Perform a geocoding request.
+
+        Either `address` or `components` (or both) can be provided to filter
+        the geocoding results.
+
+        Args:
+            address: Full address string to geocode.
+            components: Component filters as a string (e.g. 'country:US').
+            language: Preferred language for results (e.g. 'en').
+            region: Region code to bias results.
+            bounds: Bounding box to bias results.
+
+        Returns:
+            Parsed JSON response from the Google Maps Geocoding API.
+
+        Raises:
+            GoogleMapsApiError: On API errors.
+            GoogleMapsAuthError: On authentication issues.
+
+        """
         params: dict[str, Any] = {"key": self._api_key}
         if address:
             params["address"] = address
@@ -242,6 +275,24 @@ class GoogleMapsApiClient:
         result_type: str | None = None,
         location_type: str | None = None,
     ) -> dict[str, Any]:
+        """
+        Get address details for a latitude/longitude coordinate.
+
+        Args:
+            lat: Latitude coordinate
+            lng: Longitude coordinate
+            language: Language code for results (e.g. 'en')
+            result_type: Filter results to specified types
+            location_type: Filter results by location type
+
+        Returns:
+            Dictionary containing geocoding results
+
+        Raises:
+            GoogleMapsApiError: On API errors
+            GoogleMapsAuthError: On authentication issues
+
+        """
         params: dict[str, Any] = {"latlng": f"{lat},{lng}", "key": self._api_key}
         if language:
             params["language"] = language

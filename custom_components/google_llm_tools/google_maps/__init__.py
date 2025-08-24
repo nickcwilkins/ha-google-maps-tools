@@ -1,111 +1,31 @@
-"""Google Maps Tools integration setup."""
+"""Google maps LLM API support."""
 
-from __future__ import annotations
-
-import contextlib
-import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from dateutil import parser as dateutil_parser
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-if TYPE_CHECKING:  # pragma: no cover - imported for typing only
-    from homeassistant.core import HomeAssistant
-
-from .api import DirectionsOptions, GoogleMapsApiClient
-from .const import (
-    CONF_API_KEY,
+from ..const import (
     CONF_DEFAULT_LANGUAGE,
-    CONF_DEFAULT_REGION,
     CONF_DEFAULT_TRAVEL_MODE,
     DEFAULT_LANGUAGE,
-    DEFAULT_REGION,
     DEFAULT_TRAVEL_MODE,
+    DOMAIN,
+)
+from ..util import get_location_bias
+from .api import DirectionsOptions, GoogleMapsApiClient
+from .const import (
     DIRECTIONS_ARRIVAL_TIME_DESC,
     DIRECTIONS_DEPARTURE_TIME_DESC,
-    DOMAIN,
-    LLM_API_ID,
     TOOL_DIRECTIONS,
     TOOL_GEOCODE,
     TOOL_REVERSE_GEOCODE,
 )
-
-_LOGGER = logging.getLogger(__name__)
-type GoogleMapsConfigEntry = ConfigEntry
-
-
-def get_location_bias(hass: HomeAssistant) -> str | None:
-    """
-    Return a small bounding box around zone.home for geocode bias.
-
-    Google Geocoding API supports a 'bounds' parameter formatted as
-    southwest_lat,southwest_lng|northeast_lat,northeast_lng which *biases* (not
-    restricts) results toward that box. We create a ~0.02 degree box (~2 km)
-    around the home location. If home location not available, return None.
-    """
-    # zone.home entity stores coordinates; fallback to config latitude/longitude.
-    latitude = getattr(hass.config, "latitude", None)
-    longitude = getattr(hass.config, "longitude", None)
-    if latitude is None or longitude is None:
-        return None
-    delta = 0.01  # ~1.1 km latitude; acceptable small bias
-    south = latitude - delta
-    north = latitude + delta
-    west = longitude - delta
-    east = longitude + delta
-    return f"{south},{west}|{north},{east}"
-
-
-@dataclass
-class GoogleMapsRuntimeData:
-    """
-    Runtime data stored on entry.
-
-    We only need to store the API client. The LLM API unregister callback is
-    registered via `entry.async_on_unload`, which is the standard Home Assistant
-    pattern. Defaults are persisted in the config entry data and should be
-    accessed from there instead of introspecting the unregister callback.
-    """
-
-    client: GoogleMapsApiClient
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: GoogleMapsConfigEntry) -> bool:
-    """Set up Google Maps Tools from a config entry."""
-    session = async_get_clientsession(hass)
-    api_key: str = entry.data[CONF_API_KEY]
-    client = GoogleMapsApiClient(api_key, session)
-
-    # Register LLM API
-    unregister_llm = llm.async_register_api(
-        hass,
-        GoogleMapsLLMAPI(
-            hass=hass,
-            api_id=LLM_API_ID,
-            name="Google Maps",
-            entry_id=entry.entry_id,
-            client=client,
-        ),
-    )
-    # Ensure API is unregistered when the config entry unloads.
-    entry.async_on_unload(unregister_llm)
-
-    entry.runtime_data = GoogleMapsRuntimeData(client=client)  # type: ignore[attr-defined]
-    return True
-
-
-async def async_unload_entry(
-    _hass: HomeAssistant, _entry: GoogleMapsConfigEntry
-) -> bool:
-    """Unload a config entry."""
-    # Nothing extra to do; unregister handled by async_on_unload callback.
-    return True
 
 
 class GoogleMapsTool(llm.Tool):
@@ -145,15 +65,14 @@ class GeocodeTool(GoogleMapsTool):
         """Execute geocode request and return simplified results."""
         entry = _get_entry(hass, self._entry_id)
         client = entry.runtime_data.client  # type: ignore[attr-defined]
-        # Read persisted defaults from config entry data with constant fallbacks.
-        data = entry.data
+        # Defaults now live in entry.options; fall back to legacy data for
+        # backward compatibility.
+        options = entry.options
         language = tool_input.tool_args.get(
-            "language", data.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
+            "language", options.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
         )
-        region = tool_input.tool_args.get(
-            "region", data.get(CONF_DEFAULT_REGION, DEFAULT_REGION)
-        )
-        # Optional location bias from zone.home location -> small bounding box
+        # Default region derived from HA global country setting (hass.data["country"]).
+        region = tool_input.tool_args.get("region") or hass.data.get("country")
         bounds = get_location_bias(hass)
         res = await client.geocode(
             address=tool_input.tool_args.get("address"),
@@ -182,9 +101,9 @@ class ReverseGeocodeTool(GoogleMapsTool):
         """Execute reverse geocode request and return simplified results."""
         entry = _get_entry(hass, self._entry_id)
         client = entry.runtime_data.client  # type: ignore[attr-defined]
-        data = entry.data
+        options = entry.options
         language = tool_input.tool_args.get(
-            "language", data.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
+            "language", options.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
         )
         return await client.reverse_geocode(
             lat=tool_input.tool_args["lat"],
@@ -207,15 +126,13 @@ class DirectionsTool(GoogleMapsTool):
         """Execute directions request and return summary."""
         entry = _get_entry(hass, self._entry_id)
         client = entry.runtime_data.client  # type: ignore[attr-defined]
-        data = entry.data
+        options = entry.options
         language = tool_input.tool_args.get(
-            "language", data.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
+            "language", options.get(CONF_DEFAULT_LANGUAGE, DEFAULT_LANGUAGE)
         )
-        region = tool_input.tool_args.get(
-            "region", data.get(CONF_DEFAULT_REGION, DEFAULT_REGION)
-        )
+        region = tool_input.tool_args.get("region") or hass.data.get("country")
         mode = tool_input.tool_args.get(
-            "mode", data.get(CONF_DEFAULT_TRAVEL_MODE, DEFAULT_TRAVEL_MODE)
+            "mode", options.get(CONF_DEFAULT_TRAVEL_MODE, DEFAULT_TRAVEL_MODE)
         )
         origin = tool_input.tool_args["origin"]
         destination = tool_input.tool_args["destination"]
@@ -265,10 +182,6 @@ class DirectionsTool(GoogleMapsTool):
             departure_time=departure_time,
             arrival_time=arrival_time,
             avoid=tool_input.tool_args.get("avoid"),
-        )
-        _LOGGER.debug(
-            "Requesting directions tool_input=%s",
-            tool_input,
         )
         res = await client.directions(origin, destination, options)
 

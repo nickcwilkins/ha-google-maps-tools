@@ -1,0 +1,38 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Enter your Google Maps Platform API key.",
+                "data": {
+                    "api_key": "API Key"
+                }
+            },
+            "reconfigure": {
+                "description": "Update your Google Maps API key.",
+                "data": {
+                    "api_key": "API Key"
+                }
+            }
+        },
+        "error": {
+            "api_key": "API key is required.",
+            "unknown": "Unknown error occurred."
+        },
+        "abort": {
+            "already_configured": "This entry is already configured.",
+            "reconfigure_successful": "Configuration updated successfully.",
+            "wrong_account": "The unique account for this integration cannot be changed."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "description": "Configure default language and travel mode for Google Maps tools.",
+                "data": {
+                    "default_language": "Default Language",
+                    "default_travel_mode": "Default Travel Mode"
+                }
+            }
+        }
+    }
+}
