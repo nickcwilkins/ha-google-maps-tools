@@ -101,6 +101,7 @@ Follow this checklist when introducing another external capability (e.g. `openst
 3. Schemas:
 	* Use Voluptuous; keep arguments minimal & composable.
 	* Prefer explicit enumerations (`vol.In([...])`) for constrained fields (modes, units, etc.).
+	* Input surface minimization principle: aggressively limit the number of required / branching parameters so smaller LLMs reliably fill them. Favor a few high‑leverage arguments with strong defaults over many toggles. Provide sensible defaults via options (and server‑side fallbacks) so most calls only need 1–2 fields. When possible accept a single natural language field (e.g. `query`, `origin_text`) that the tool interprets internally instead of exposing many discrete knobs. Keep types simple (string, number, enum, boolean) and avoid deeply nested objects or arrays unless essential. This reduces validation friction, improves tool selection accuracy, and mitigates model omission / hallucination of parameter names.
 4. Register the new LLM API in the integration entrypoint (`__init__.py`):
 	* Instantiate its API object alongside Google Maps.
 	* Capture the unregister callback with `entry.async_on_unload`.
