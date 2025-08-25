@@ -18,11 +18,16 @@ import async_timeout
 if TYPE_CHECKING:
     import aiohttp
 
-from ..const import (
-    HTTP_TIMEOUT,
-)
+from ..const import HTTP_TIMEOUT
 from .const import (
     GEOCODE_ENDPOINT,
+    PLACES_DETAILS_ENDPOINT,
+    PLACES_FIELD_MASK_DETAILS,
+    PLACES_FIELD_MASK_SEARCH_NEARBY,
+    PLACES_FIELD_MASK_SEARCH_TEXT,
+    PLACES_NEARBY_SEARCH_ENDPOINT,
+    PLACES_TEXT_SEARCH_ENDPOINT,
+    PRICE_LEVEL_MAP,
     ROUTES_ENDPOINT,
 )
 
@@ -341,18 +346,263 @@ class GoogleMapsApiClient:
         _LOGGER.debug("Routes API response: %s", data)
         return data
 
+    # ------------------------------------------------------------------
+    # Places API helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_price_level(value: str | None) -> dict[str, Any] | None:
+        """Return mapping with numeric and label for price level."""
+        if not value:
+            return None
+        lvl = PRICE_LEVEL_MAP.get(value)
+        if lvl is None:
+            return {"label": value}
+        return {"level": lvl, "label": value}
+
+    @staticmethod
+    def _flatten_place_basic(place: dict[str, Any]) -> dict[str, Any]:
+        """Return simplified place object from search responses."""
+        out: dict[str, Any] = {}
+        pid = place.get("id")
+        if pid:
+            out["id"] = pid
+        dn = place.get("displayName")
+        if dn and isinstance(dn, dict):
+            out["name"] = dn.get("text")
+            lang = dn.get("languageCode")
+            if lang is not None:
+                out["name_lang"] = lang
+        if addr := place.get("formattedAddress"):
+            out["address"] = addr
+        if ptype := place.get("primaryType"):
+            out["primary_type"] = ptype
+        if rating := place.get("rating"):
+            out["rating"] = rating
+        if pl := GoogleMapsApiClient._normalize_price_level(place.get("priceLevel")):
+            out["price_level"] = pl
+        # openNow nested under currentOpeningHours
+        open_now = place.get("currentOpeningHours", {}).get("openNow")
+        if open_now is not None:
+            out["open_now"] = open_now
+        if types := place.get("types"):
+            out["types"] = types
+        return out
+
+    @staticmethod
+    def _simplify_details(place: dict[str, Any]) -> dict[str, Any]:
+        """Return simplified place details mapping."""
+        out = GoogleMapsApiClient._flatten_place_basic(place)
+        # Add phones
+        phone_national = place.get("nationalPhoneNumber")
+        phone_international = place.get("internationalPhoneNumber")
+        if phone_national or phone_international:
+            phone: dict[str, Any] = {}
+            if phone_national:
+                phone["national"] = phone_national
+            if phone_international:
+                phone["international"] = phone_international
+            out["phone"] = phone
+        if (website := place.get("websiteUri")) is not None:
+            out["website"] = website
+        if (urc := place.get("userRatingCount")) is not None:
+            out["user_rating_count"] = urc
+        # Opening hours weekday descriptions
+        weekday_desc = (
+            place.get("currentOpeningHours", {}).get("weekdayDescriptions") or []
+        )
+        if weekday_desc:
+            out["hours_weekday_text"] = weekday_desc
+        return out
+
+    async def _places_post(
+        self, url: str, body: dict[str, Any], field_mask: str
+    ) -> dict[str, Any]:
+        """Post to Places search endpoint and return JSON."""
+        try:
+            async with async_timeout.timeout(HTTP_TIMEOUT):
+                headers = {
+                    "X-Goog-Api-Key": self._api_key,
+                    "X-Goog-FieldMask": field_mask,
+                    "Content-Type": "application/json",
+                }
+                async with self._session.post(url, json=body, headers=headers) as resp:
+                    if resp.status != 200:  # noqa: PLR2004
+                        text = await resp.text()
+                        msg = f"Places API HTTP {resp.status}: {text[:300]}"
+                        raise GoogleMapsApiError(msg)
+                    data: dict[str, Any] = await resp.json()
+        except GoogleMapsApiError:
+            raise
+        except Exception as err:  # pylint: disable=broad-except
+            msg = f"Places request failed: {err}"
+            raise GoogleMapsApiError(msg) from err
+        return data
+
+    # Dataclasses for options kept here to avoid extra module clutter
+    @dataclass(slots=True)
+    class TextSearchOptions:
+        """Container for text search options."""
+
+        text_query: str
+        included_type: str | None = None
+        strict_type_filtering: bool | None = None
+        open_now: bool | None = None
+        min_rating: float | None = None
+        price_levels: list[str] | None = None
+        radius_m: int | None = None
+        bias_center: tuple[float, float] | None = None
+        language: str | None = None
+        region: str | None = None
+        page_size: int | None = None
+
+    @dataclass(slots=True)
+    class NearbySearchOptions:
+        """Container for nearby search options."""
+
+        radius_m: int
+        center: tuple[float, float]
+        included_types: list[str] | None = None
+        excluded_types: list[str] | None = None
+        included_primary_types: list[str] | None = None
+        excluded_primary_types: list[str] | None = None
+        language: str | None = None
+        region: str | None = None
+        max_results: int | None = None
+        rank: str | None = None
+
+    async def places_search_text(self, options: TextSearchOptions) -> dict[str, Any]:
+        """Perform Text Search (New) with fixed field mask and simplification."""
+        body: dict[str, Any] = {"textQuery": options.text_query}
+        if options.included_type:
+            body["includedType"] = options.included_type
+        if options.strict_type_filtering is not None:
+            body["strictTypeFiltering"] = options.strict_type_filtering
+        if options.open_now is not None:
+            body["openNow"] = options.open_now
+        if options.min_rating is not None:
+            body["minRating"] = options.min_rating
+        if options.price_levels:
+            body["priceLevels"] = options.price_levels
+        if options.language:
+            body["languageCode"] = options.language
+        if options.region:
+            body["regionCode"] = options.region
+        if options.page_size:
+            body["pageSize"] = options.page_size
+        if options.radius_m and options.radius_m > 0 and options.bias_center:
+            body["locationBias"] = {
+                "circle": {
+                    "center": {
+                        "latitude": options.bias_center[0],
+                        "longitude": options.bias_center[1],
+                    },
+                    "radius": float(options.radius_m),
+                }
+            }
+        data = await self._places_post(
+            PLACES_TEXT_SEARCH_ENDPOINT, body, PLACES_FIELD_MASK_SEARCH_TEXT
+        )
+        places: list[dict[str, Any]] = [
+            self._flatten_place_basic(p) for p in data.get("places", [])
+        ]
+        return {"places": places, "raw_count": len(places)}
+
+    async def places_search_nearby(
+        self, options: NearbySearchOptions
+    ) -> dict[str, Any]:
+        """Perform Nearby Search (New)."""
+        body: dict[str, Any] = {
+            "locationRestriction": {
+                "circle": {
+                    "center": {
+                        "latitude": options.center[0],
+                        "longitude": options.center[1],
+                    },
+                    "radius": float(options.radius_m),
+                }
+            }
+        }
+        if options.included_types:
+            body["includedTypes"] = options.included_types
+        if options.excluded_types:
+            body["excludedTypes"] = options.excluded_types
+        if options.included_primary_types:
+            body["includedPrimaryTypes"] = options.included_primary_types
+        if options.excluded_primary_types:
+            body["excludedPrimaryTypes"] = options.excluded_primary_types
+        if options.language:
+            body["languageCode"] = options.language
+        if options.region:
+            body["regionCode"] = options.region
+        if options.max_results:
+            body["maxResultCount"] = options.max_results
+        if options.rank:
+            body["rankPreference"] = options.rank
+        data = await self._places_post(
+            PLACES_NEARBY_SEARCH_ENDPOINT, body, PLACES_FIELD_MASK_SEARCH_NEARBY
+        )
+        places: list[dict[str, Any]] = [
+            self._flatten_place_basic(p) for p in data.get("places", [])
+        ]
+        return {"places": places, "raw_count": len(places)}
+
+    async def place_details(
+        self,
+        place_id: str,
+        *,
+        language: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch place details with fixed field mask and simplify."""
+        # Accept resource name 'places/<id>' or raw id
+        pid = place_id.split("/")[-1]
+        url = PLACES_DETAILS_ENDPOINT.format(pid)
+        try:
+            async with async_timeout.timeout(HTTP_TIMEOUT):
+                headers = {
+                    "X-Goog-Api-Key": self._api_key,
+                    "X-Goog-FieldMask": PLACES_FIELD_MASK_DETAILS,
+                    "Content-Type": "application/json",
+                }
+                params: dict[str, Any] = {}
+                if language:
+                    params["languageCode"] = language
+                if region:
+                    params["regionCode"] = region
+                async with self._session.get(
+                    url, headers=headers, params=params
+                ) as resp:
+                    if resp.status in (401, 403):
+                        msg = "Authentication error with Google Place Details API"
+                        raise GoogleMapsAuthError(msg)
+                    if resp.status == 404:  # noqa: PLR2004
+                        return {
+                            "error": {
+                                "code": "NOT_FOUND",
+                                "message": "Place not found",
+                            }
+                        }
+                    if resp.status != 200:  # noqa: PLR2004
+                        text = await resp.text()
+                        msg = f"Place Details HTTP {resp.status}: {text[:300]}"
+                        raise GoogleMapsApiError(msg)
+                    data: dict[str, Any] = await resp.json()
+        except GoogleMapsApiError:
+            raise
+        except Exception as err:
+            msg = f"Place Details request failed: {err}"
+            raise GoogleMapsApiError(msg) from err
+        return self._simplify_details(data)
+
     async def _request(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
             async with (
                 async_timeout.timeout(HTTP_TIMEOUT),
                 self._session.get(url, params=params) as resp,
             ):
-                if resp.status in (401, 403):
-                    msg = "Authentication error with Google Maps API"
-                    raise GoogleMapsAuthError(msg)
                 resp.raise_for_status()
                 data: dict[str, Any] = await resp.json()
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:
             msg = f"Request failed: {err}"
             raise GoogleMapsApiError(msg) from err
 

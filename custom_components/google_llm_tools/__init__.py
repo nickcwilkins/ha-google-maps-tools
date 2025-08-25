@@ -12,7 +12,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .google_maps import GoogleMapsLLMAPI
 
-if TYPE_CHECKING:  # pragma: no cover - imported for typing only
+if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -59,7 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoogleMapsConfigEntry) -
     # Ensure API is unregistered when the config entry unloads.
     entry.async_on_unload(unregister_llm)
 
-    entry.runtime_data = GoogleMapsRuntimeData(client=client)  # type: ignore[attr-defined]
+    entry.runtime_data = GoogleMapsRuntimeData(client=client)
     return True
 
 

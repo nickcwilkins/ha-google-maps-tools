@@ -1,6 +1,6 @@
 # Google Maps Tools (Home Assistant LLM API)
 
-Expose Google Maps Platform capabilities (geocoding, reverse geocoding, turn‑by‑turn directions) to Home Assistant Large Language Model (LLM) / Assist style agents via a custom LLM API. This lets an AI assistant inside Home Assistant call structured tools to:
+Expose Google Maps Platform capabilities (geocoding, reverse geocoding, turn‑by‑turn directions) to Home Assistant Large Language Model (LLM) / Assist style agents via a custom LLM API. Backed by the official `googlemaps` Python SDK (run in a background executor) it lets an AI assistant inside Home Assistant call structured tools to:
 
 * Convert an address (or component filters) to coordinates
 * Convert coordinates to the best matching human readable address
@@ -15,6 +15,7 @@ Expose Google Maps Platform capabilities (geocoding, reverse geocoding, turn‑b
 * Sensible defaults for language, region, travel mode.
 * Minimal prompt instructing the model how to use the tools.
 * Simplified structured responses (status + concise summary) while retaining core route metrics.
+* Uses official `googlemaps` SDK (no custom raw HTTP implementation) for reliability & maintenance.
 
 ## Installation
 
@@ -52,11 +53,17 @@ The assistant may decide:
 1. Call `gmaps_geocode` with an address → get coordinates.
 2. Call `gmaps_directions` with textual addresses directly (API supports this) → summarize distance & ETA to user.
 
-Returned direction summary fields: `summary`, `distance_meters`, `distance_text`, `duration_seconds`, `duration_text`, `start_address`, `end_address`.
+Returned direction route objects (list) each include:
+* `summary`: Short textual summary of major roads (if provided by API)
+* `legs`: List of legs with `distance`, `duration`, `start_address`, `end_address`
+* `distance_meters`: Total aggregated distance across legs
+* `duration_seconds`: Total aggregated duration across legs
+
+The raw verbose Google Directions response is intentionally collapsed to keep payloads small for LLM summarization. (Previous versions used the Routes API with field masks; migration retained a similar concise shape.)
 
 ## Privacy / Quotas
 
-All requests go directly to Google’s Web Service endpoints from your Home Assistant instance. Ensure your API key is restricted (HTTP referrer / IP) per Google’s best practices. Usage counts against your Google Maps Platform billing account quotas.
+All requests go through the official `googlemaps` client (which uses Google’s Web Service endpoints) from your Home Assistant instance. Ensure your API key is restricted (HTTP referrer / IP) per Google’s best practices. Usage counts against your Google Maps Platform billing account quotas.
 
 ## Troubleshooting
 

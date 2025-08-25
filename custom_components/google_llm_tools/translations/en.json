@@ -34,5 +34,19 @@
                 }
             }
         }
+    },
+    "tool": {
+        "gmaps_places_search_text": {
+            "name": "Places text search",
+            "description": "Search for places using a free-form text query with optional filters (rating, price, open now)."
+        },
+        "gmaps_places_search_nearby": {
+            "name": "Places nearby search",
+            "description": "Find places near a location within a radius filtered by included/excluded types."
+        },
+        "gmaps_place_details": {
+            "name": "Place details",
+            "description": "Get details for a place id including hours, rating, price level, phone, and website."
+        }
     }
 }
